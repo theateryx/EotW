@@ -1,0 +1,606 @@
+---
+title: "Project Thera Bank"
+author: "Lim Su Ping"
+date: "3/5/2020"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+
+setwd("C:/Users/Ping/Desktop/DSBA/assignment/")
+library(readxl)
+library(DataExplorer)
+library(tidyverse)
+library(randomForest)
+library(ggplot2)
+library(caret) ## confusionMatrix
+
+datathera <- read_xlsx("Thera Bank_Personal_Loan_Modelling-dataset-1.xlsx",sheet = 2,)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+You are brought in as a consultant and your job is to build the best model which can classify the right customers who have a higher probability of purchasing the loan. You are expected to do the following:
+•	EDA of the data available. Showcase the results using appropriate graphs 
+•	Apply appropriate clustering on the data and interpret the output (Thera Bank wants to understand what kind of customers exist in their database and hence we need to do customer segmentation) 
+•	Build appropriate models on both the test and train data (CART & Random Forest). Interpret all the model outputs and do the necessary modifications wherever eligible (such as pruning)
+•	Check the performance of all the models that you have built (test and train). Use all the model performance measures you have learned so far. Share your remarks on which model performs the best
+
+```{r EDA - cleaning}
+# observe and clean data
+# Check summary and structure of data
+dim(datathera)                
+head(datathera)
+str(datathera)
+summary(datathera)
+
+# Rename Columns
+colnames(datathera) = make.names(colnames(datathera))
+thera <- datathera %>% rename( Age = Age..in.years., Experience = Experience..in.years., Income = Income..in.K.month.)
+colnames(thera)
+View(thera)
+
+```
+### Exploratory Data Analysis 
+
+The Thera Bank dataset has 5000 rows of observations and 14 variables. Checking through the data, the columns are first renamed for ease of working with the data. 
+
+There are missing Data for the Family.members variable, as well as negative values for Experience. Missing NA data for 18 entries in Family members are treated as "0", instead of setting it to median or mean, since it is possible that there may be instances where an individual may be living alone. At the same time, this allows for the 18 observed rows to be included in the analysis. Experience values are also treated as absolute values, which makes more sense within the context of the data.
+
+There is also one ZIP code which is 4 digit instead of 5, but seeing as it is just 1 entry it will not be significant and no changes will be made
+
+```{r EDA - Data Treatment}
+
+# Determine if there are any NA data within, locate where NAs are
+anyNA(thera)
+colSums(is.na(thera))
+
+# replace NA with "0"
+thera[is.na(thera)] = 0
+
+summary(thera$Family.members) #check
+
+# Manage negative values for Experience variable
+thera$Experience = abs(thera$Experience)
+summary(thera$Experience) #check
+
+```
+
+Screening through the rest of the data, it is observed that the following variables serve no purpose to the analysis and will be removed for analysis: ID
+
+The following variables are also noted to be logical values of "0"and "1", which we will convert to factors for analysis:
+Education, Personal.Loan, Securities.Account, CD.Account, Online, CreditCard
+
+ZIPcode is also expressed as a factor to see which areas are significant.
+
+```{r Treatment of Data 2}
+
+#Set as factors
+thera$Education = as.factor(thera$Education)
+thera$Personal.Loan = as.factor(thera$Personal.Loan)
+thera$Securities.Account = as.factor(thera$Securities.Account)
+thera$CD.Account = as.factor(thera$CD.Account)
+thera$Online = as.factor(thera$Online)
+thera$CreditCard = as.factor(thera$CreditCard)
+thera$ZIP.Code = as.factor(thera$ZIP.Code)
+
+# subset - remove ID and ZIP code variables
+
+theradata <- thera[, -c(1)]
+summary(theradata) #check
+
+# Education ordered factors
+thera$Education = factor(thera$Education, order = TRUE)
+summary(thera$Education)
+
+```
+
+### Univariate Analysis
+
+All continuous and factored variables are plotted to observe the data of Thera Bank customers and their relationships with the bank.
+
+```{r EDA Univariate}
+# proportion of customers who took a personal loan after the recent campaign
+prop.table(table(theradata$Personal.Loan))*100 
+
+plot_histogram(theradata, title ="Univariate Analysis for Continuous Data")
+
+plot_bar(theradata, title ="Univariate Analysis for Factored Data")
+
+#plot for Zipcode to observe frequency
+qplot(theradata$ZIP.Code, main = "Zipcode")
+
+table(theradata$ZIP.Code, theradata$Personal.Loan=="1")
+# Top 10% of customers from the following Zipcodes - 94720, 94305, 95616, 90095, 93106
+```
+
+Univariate analysis reveal that age and experience of Thera's customers are of a normal distribution. The data is also imbalanced as only less than 10% of all customers accepted the offer of a Personal Loan, and the majority did not possess a Mortgage, Securities Account, CD Account.
+
+Income and Credit Card Averages are skewed to the left. Slightly less than half of Thera Bank's customers being undergraduates.Around 10% of their customers come from the following ZIPcodes in California - 94720 (Berkley), 94305 (Stanford), 95616 (Davis), 90095 (Los Angeles), 93106 (Santa Barbara). More than half of their customers have an online bank account.
+
+### Bivariate Analysis
+
+Bivariate analysis is then conducted across all variables using Education, Mortgage, Personal Loan status.
+
+```{r EDA Bivariate}
+plot_boxplot(theradata, by = "Education")
+# Across Education, there are many outliers vs CCAvg Spending, Income, Mortgage. Professionals are observed to have more family members, while undergraduates seem to have a higher average of credit card spending
+
+plot_boxplot(theradata, by = "Mortgage")
+# Across Mortgage,customers who have higher value mortgages also have higher average annual income. They also have more average Credit Card spending. There are many outliers in the $0-$127k mortgage bin, showing a potential batch of high income earners and high average credit card spendings.
+
+plot_boxplot(theradata, by = "Personal.Loan")
+# Across personal loans, lower average credit card spending, income and mortgage are less likely to take a personal loan. There are also some outliers who have high mortgages and average credit card spending who did not take up a personal loan.
+
+ggplot(theradata, aes(Education, fill= Personal.Loan)) +
+    geom_bar(stat = "count", position = "dodge") +
+    scale_fill_manual("Personal Loan", values = c("0" = "blue", "1" = "grey"))
+# Personal loan takers are more likely to have higher educational levels
+
+ggplot(theradata, aes(Income, y=Mortgage, color = Personal.Loan)) +
+  geom_point(size = 0.5)
+# Mortgage vs Personal Loan Takeup rate by income
+
+ggplot(theradata, aes(Income, y=CCAvg, color = Personal.Loan)) +
+  geom_point(size = 0.5)
+# Credit card Spending vs Personal Loan Takeup rate by income
+
+prop.table(table(theradata$Personal.Loan, theradata$Education)) #population
+prop.table(table(theradata$Personal.Loan, theradata$Education),1) #rows
+loaners <-(0.379+0.427)*100
+prop.table(table(theradata$Personal.Loan, theradata$Education),2) #columns
+
+```
+
+Based on Bivariate analysis, the proportion of loan takers are a very small number (9.6%). Which could mean more potential customers for Thera Bank, depending on how they segment, educate, and attract their customers with attractive interest rates and more.
+
+Personal Loan takers from the first batch are more likely to be graduates and above (80.6%), with higher income, more family members, and higher mortgages.This is likely to be because they are likely to be financially literate, and are financially more secure, taking on loans to manage their cashflow better.
+
+Multivariate analysis also shows that Personal Loan acceptance is more likely from customers who have higher income, higher credit card spending with higher mortgages.
+
+### Customer Segmentation using Clustering
+
+To understand the segments of customers that Thera Bank has so they can better target them for better results, kmeans clustering by classification is applied to segment the large dataset we have (5000 observations). Hierarchical methods will be too computationally expensive.
+
+Using only numerical variables, we will scale the data to have better accuracy. Euclidean distance will be applied for classification.
+
+```{r Prepare Data for Clustering}
+
+library(cluster)
+
+# select numerical variables 
+thera.clus = theradata %>% select_if(is.numeric)
+
+# scale data for clustering
+thera.scaled = scale(thera.clus, center = TRUE)
+
+```
+
+#### Determining optimal number of clusters
+
+Using elbow method
+
+```{r Determine number of clusters - elbow}
+seed = 555
+set.seed(seed)
+
+totWss=rep(0,5)
+for(k in 1:5){
+  set.seed(seed)
+  clust=kmeans(x=thera.scaled, centers=k, nstart=10)
+  totWss[k]=clust$tot.withinss
+}
+print(totWss)
+plot(c(1:5), totWss, type="b", xlab="Number of Clusters",
+       ylab="sum of 'Within groups sum of squares'")  
+```
+
+
+```{r crosscheck clusters, results='hide',fig.keep='none', warning=FALSE,message=FALSE,error=FALSE}
+# Cross checking with secondary method
+library(NbClust)
+
+nc = NbClust(thera.scaled, min.nc = 2, max.nc = 5, method = "kmeans")
+
+```
+
+```{r table}
+table(nc$Best.n[1,])
+```
+
+Based on the two tests, a cluster size of 3 is optimal.
+
+```{r Clustering }
+
+library(factoextra)
+
+set.seed(seed)
+
+cluster3 = kmeans(thera.scaled, 3)
+cluster3$centers
+
+fviz_cluster(cluster3, data = thera.scaled, geom = "point")
+
+```
+
+```{r Analyze Thera Bank Customer Profile}
+theradata$Clusters = cluster3$cluster
+prop.table(table(theradata$Clusters))
+table(theradata$Clusters)
+
+## Aggregate numerical variables for each cluster by their means
+theraProfile = aggregate(theradata[,-c(4,6,7,8,9,10,11,12,13)],list(theradata$Clusters),FUN="mean")
+print(theraProfile)
+
+```
+
+Based on the results from Kmeans Clustering, Thera Bank's customers are segmented into 3 clusters. The bulk of the 1st cluster contains 2019 pax (40.38%), 2nd 839 pax(16.78%) and 3rd 2142 pax(42.84%).
+
+Aggregating the data these are the 3 segments in the Population:
+
+##### Group 1 - Young with Low Income (40.28%)
+Younger Working Adults (1st Quartile, 35 years)
+Low Working Experience ( < 1st Quartile, 9.9 years)
+Below Median Income (< Median, $60k per annum)
+
+This group will be good to target for Personal Loans and mortgages, as they will be earning more in the future, and making more plans for family and future. New credit cards with smaller credits limits can be more appealing for them.
+
+##### Group 2 - High Income with No Children (16.78%)
+Middle Aged Working Adults (Median, 45 years)
+Average Working EXperience (close to median, 18 years)
+High Income ( > 3rd Quartile, $146K per annum)
+
+This group is already financially savvy, but is still good to target for not just personal loans, but also mortgage and new credit cards with higher credit limits.
+
+##### Group 3 - Older and Low Income (42.84%)
+Older Working Adults(3rd Quartile, > 55 years)
+Extensive WOrking Experience (3rd Quartile, > 30 years)
+Below Median Income ( < $64K per annum)
+
+This group is already financially stable, but may need to consider low interest Personal Loans for short term contingencies. Credit Card or stored valued Credit Cards with smaller credit limits may also be more appealing, in terms of security.
+
+### Preparation of Train & Test Data
+
+```{r load libraries for CART, include=FALSE}
+library(rpart)
+library(rpart.plot)
+library(caTools)
+library(rattle)
+library(RColorBrewer)
+library(data.table)
+library(ROCR)
+library(StatMeasures)
+library(pacman)
+library(randomForest)
+library(caret)
+
+```
+
+Create Train and Test Sets with a 70% Train and 30% Test split.
+
+```{r Create Train and Test Sets}
+
+######## 70% train, 30% test
+thera.index = theradata[,-c(4,14)] # remove cluster variable & Zip
+
+#Paritioning the data into training and test dataset
+set.seed(seed)
+
+sample = sample.split(thera.index$Personal.Loan,SplitRatio = 0.7)
+p_train = subset(thera.index,sample == TRUE)
+p_test = subset(thera.index,sample == FALSE)
+nrow(p_train)
+nrow(p_test)
+head(p_train)
+
+## proportion of class
+prop.table(table(thera.index$Personal.Loan)) # original proportion
+
+# Checking the Personal Loan distribution
+prop.table(table(p_train$Personal.Loan)) # train set to match original proportion
+table(p_train$Personal.Loan)
+
+```
+
+### Build CART Model
+
+Classification and Regression trees is a powerful yet simple decision tree algorithm used to learn and grow data. "rpart" and "rpart.plot" libraries are used to build decision treees. A complex tree is first build, by setting the "cost complexity" threshold to "0" with a minimum bucket size of 5.
+
+
+```{r CART Model}
+
+#Setting the control parameters
+r.ctrl = rpart.control(minsplit = 10, minbucket = 5, cp = 0, xval = 10)
+
+
+#Building the CART model
+dt_model <- rpart(formula = Personal.Loan~ ., data = p_train, method = "class", control = r.ctrl)
+dt_model
+
+#Displaying the decision tree
+fancyRpartPlot(dt_model)
+
+# The cost complexity table can be obtained using the printcp or plotcp functions
+printcp(dt_model)
+plotcp(dt_model)
+
+```
+
+The first complex tree above can be pruned using a cost complexity threshold of 0.0052 to give a simpler tree.
+
+```{r Pruning}
+# Pruning the tree
+dt_modelprune = prune(dt_model, cp= 0.0052,"CP")
+printcp(dt_modelprune)
+
+fancyRpartPlot(dt_modelprune)
+
+dt_modelprune
+dt_modelprune$variable.importance
+```
+
+Based on the results of the Pruned CART decision tree, the most important variables that influence the prediction of Personal Loans uptake are:
+
+Education, Income, Family.members, CCAvg, CD.Account
+
+The first split occurs when Income is less than or greater than $115K. If lesser, Credit Card average spending and CD Accounts will affect the prediction. If more, Education and Family Member count will affect the prediction outcome on Personal Loan. 
+
+### Random Forest
+
+An ensemble learning method which outputs multiple decision trees and uses bagging and randomness of varying degrees to give an aggregated output giving a more robust prediction.
+
+```{r Create RF Train and Test Sets}
+# 70% train, 30% test
+p_trainrf <- p_train 
+p_testrf <- p_test 
+
+
+```
+
+Similar to CART, we split train and test data at a 70% and 30% split. The first randomforest is created to determine variables that influence Personal.Loan status to be taken up.
+
+```{r Build the first RF}
+#mtry
+sqrt(12)
+
+#nodesize
+0.1 * 3500
+
+##Build the first RF model
+
+set.seed(seed)
+
+rf_first = randomForest(Personal.Loan ~ ., 
+                        data = p_trainrf, 
+                        ntree=501, 
+                        mtry = 3, 
+                        nodesize = 350,
+                        importance=TRUE)
+
+# error rate
+error = rf_first$err.rate
+head(error)
+
+#out of bag error
+oob_err = error[nrow(error), "OOB"]
+print(oob_err)
+
+print(rf_first)#Print the model to see the OOB and error rate
+plot(rf_first) #Plot rf_first to estimate ntree count and OOB error
+
+randomForest::importance(rf_first)
+varImpPlot(rf_first) #identify variable importance
+
+```
+
+The error rate plot reveals that anything more than 230 trees is really not that valuable. Initial OOB error was 7.34%
+
+```{r Tune Forest}
+set.seed(seed)
+
+tune_rf = tuneRF(x = subset(p_trainrf, select = -Personal.Loan),
+                y = p_trainrf$Personal.Loan,
+                mtryStart = 3,
+                nodesize= 305,
+                ntree = 230, 
+                doBest = TRUE, 
+                trace = TRUE,
+                plot=TRUE,
+                importance=TRUE)
+
+
+Rforest = randomForest(Personal.Loan~.,
+                    data=p_trainrf,
+                    ntree=230,
+                    mtry=6,
+                    nodesize=10,
+                    importance=TRUE)
+print(Rforest)
+
+randomForest::importance(Rforest)
+varImpPlot(Rforest) #identify variable importance
+
+```
+
+The larger the MeanDecrease values, the more important the variable. For the first random forest generated, the key variables are Income, Education, CCAvg, and Family Members. After pruning, the tuned random forest showed that Education was the most important variable as predictors for acceptance of Personal loans followed by Income, Family and CC Avg.
+
+The OOB value also reduced to 1.26%, from 7.34% improving on accuracy.
+
+### CART Model Performance Measures
+
+For a model with a class output, the confusion matrix provides the count of correct and wrong predictions.
+```{r  CART Predict Train/Test}
+# Cart Train Set- adding prediction and prob score variables
+p_train$predict.class <- predict(dt_modelprune, p_train, type = "class")
+p_train$predict.score <- predict(dt_modelprune, p_train, type = "prob")
+head(p_train)
+
+# Cart Test Set- adding prediction and prob score variables
+p_test$predict.class <- predict(dt_modelprune, p_test, type = "class")
+p_test$predict.score <- predict(dt_modelprune, p_test, type = "prob")
+head(p_test)
+```
+
+For a model with a class output, the confusion matrix provides the count of correct and wrong predictions.
+
+```{r CART Confusion Matrix/Contingency Table}
+# Cart - Interpretation of Confusion Matrix - Train
+confusionMatrix(p_train$Personal.Loan, p_train$predict.class, positive = "1")
+
+# Cart - Interpretation of Confusion Matrix - Test
+confusionMatrix(p_test$Personal.Loan, p_test$predict.class, positive = "1")
+
+
+```
+
+In the train set, the accuracy rate of correct predictions is 98.83%, and the test set has an accuracy of 98.33% (1475/1500). Classification error rate of train set is 1.17%, and with test set is 1.67%.
+
+The sensitivity (true positive rate) of the train set is 97.42%, and the test set improved at 99.63%. 
+The specificity (true negative rate) of the train set is 98.97%, and the test set is 83.11%.
+
+The performance of this CART model has a high credibility based on high sensitivity and specificity rates for the train set. It identifies the variables in the train and test set, as the accuracy result are both similarly high. 
+
+However, the proportion of actual negatives that are correctly identified are lower than actual positives for test set.Based on the test model, the bank is more likely to target customers who are more likely to reject the Personal Loan offers.
+
+
+```{r CART ROC AUC}
+
+# Cart - Performance Metrics ROC AUC - Train
+predCART <- prediction(p_train$predict.score[,2], p_train$Personal.Loan)
+perfCART <- performance(predCART, "tpr", "fpr")
+plot(perfCART, main = "ROC Curve")
+
+auc <- performance(predCART, "auc");
+auc <- as.numeric(auc@y.values)
+auc
+
+# Cart - Performance Metrics ROC AUC - Test
+TpredCART <- prediction(p_test$predict.score[,2], p_test$Personal.Loan)
+TperfCART <- performance(TpredCART, "tpr", "fpr")
+plot(TperfCART, main = "ROC Curve")
+
+aucTest <- performance(TpredCART, "auc");
+aucTest <- as.numeric(aucTest@y.values)
+aucTest
+
+```
+
+CART - ROC curve 
+
+The Area Under the ROC curve performance test us a measure of how good the model is. This uses the probability outputs to map a curve. The performance for the CART train set is - 0.9837, and for the test set is - 0.9828, the closer it is to 1.0, the better the fit/model performance.
+
+```{r CART KS & GINI}
+# Cart - Performance Metrics KS - train & test
+cartks <- max(perfCART@y.values[[1]]-perfCART@x.values[[1]])
+cartkstest <-max(TperfCART@y.values[[1]]-TperfCART@x.values[[1]])
+cartks
+cartkstest
+
+# Cart - Performance Metrics Gini - train & test
+library(ineq)
+cartgini.train = ineq(p_train$predict.score[,2], type="Gini")
+cartgini.test = ineq(p_test$predict.score[,2], type="Gini")
+
+```
+The K-S is used for classification with probability outputs as well, it is a measure of the degree of separation between positive and negative distributions The higher the value, the better the model. For the CART train set - 0.9177, and test set - 0.9147
+
+The Gini Coefficient ia a ratio derived from ROC curve and a formula of Gini = 2*AUC -1
+Above 60% is a good model, for the CART train model - 91.78%, and test model - 91.47%
+
+
+### Random Forest Model Performance Measures
+
+```{r Performance - Random Forest Train & Test}
+
+# RF Train & Test Set- adding prediction and prob score variables
+
+p_trainrf$predict.class = predict(Rforest,data=p_trainrf,type="class")
+p_trainrf$predict.score = predict(Rforest,data=p_trainrf,type="prob")[,"1"]
+head(p_trainrf)
+
+p_testrf$predict.class = predict(Rforest,p_testrf,type="class")
+p_testrf$predict.score = predict(Rforest,p_testrf,type="prob")[,"1"]
+head(p_testrf)
+
+```
+
+```{r RF Confusion Matrix}
+
+# RF Interpretation of Confusion Matrix - Train
+confusionMatrix(p_trainrf$Personal.Loan, p_trainrf$predict.class, positive = "1")
+
+# RF Interpretation of Confusion Matrix - Test
+confusionMatrix(p_testrf$Personal.Loan, p_testrf$predict.class, positive = "1")
+
+```
+
+In the train set, the accuracy rate of correct predictions is 98.74%, and the test set has an accuracy of 98.73% (1481/1500). Classification error rate of train set is 1.26%, and with test set is 1.27%.
+
+The sensitivity (true positive rate) of the train set is 97.40%, and the test set improved at 94.96%
+The specificity (true negative rate) of the train set is 98.87% and the test set is improved at 99.12%.
+
+The performance of this Random Forest model has a higher credibility based on high sensitivity and specificity rates for the train and improved rates with the test set. It identifies the variables in the train and test set, as the accuracy result are similarly high. 
+
+The proportion of actual negatives that are correctly identified are higher than actual positives for test set.Based on the test model, the bank is more likely to target customers who are likely to accept the Personal Loan offers.
+
+
+```{r RF ROC AUC}
+
+# RF Performance Metrics ROC - Train
+predrf.train <- prediction(p_trainrf$predict.score, p_trainrf$Personal.Loan)
+perfrf.train <- performance(predrf.train, "tpr", "fpr")
+plot(perfrf.train, main = "ROC curve for Random Forest - Train")
+
+aucrf.train <- performance(predrf.train,"auc"); 
+aucrf.train <- as.numeric(aucrf.train@y.values)
+aucrf.train
+
+# RF Performance Metrics ROC - Test
+predrf.test <- prediction(p_testrf$predict.score, p_testrf$Personal.Loan)
+perfrf.test <- performance(predrf.test, "tpr", "fpr")
+plot(perfrf.test, main = "ROC curve for Random Forest - Test")
+
+aucrf.test <- performance(predrf.test,"auc"); 
+aucrf.test <- as.numeric(aucrf.test@y.values)
+aucrf.test
+
+```
+Random Forest - ROC curve 
+
+The Area Under the ROC curve performance test us a measure of how good the model is. This uses the probability outputs to map a curve. The performance for the Random train set is - 0.9943, and for the test set is - 0.9974, the closer it is to 1.0, the better the fit/model performance. Thus, the Random Forest fared better than CART model.
+
+```{r RF KS GINI}
+
+# RF Performance Metrics KS Test - Train
+KS_rftrain <- max(attr(perfrf.test, 'y.values')[[1]]-attr(perfrf.test, 'x.values')[[1]])
+KS_rftrain
+
+# RF Performance Metrics KS Test - Test
+KS_rftest <- max(attr(perfrf.test, 'y.values')[[1]]-attr(perfrf.test, 'x.values')[[1]])
+KS_rftest
+
+# RF Gini Test
+rfgini.train = ineq(p_trainrf$predict.score, type="Gini")
+rfgini.test = ineq(p_testrf$predict.score, type="Gini")
+rfgini.train
+rfgini.test
+```
+The K-S is used for classification with probability outputs as well, it is a measure of the degree of separation between positive and negative distributions The higher the value, the better the model. For the Random Forest, the train and set have the same result of 0.9636.
+
+The Gini Coefficient ia a ratio derived from ROC curve and a formula of Gini = 2*AUC -1
+Above 60% is a good model, for the Random Forest train model - 89.88%, and test model - 89.91%
+Inferences
+
+### Model Validation and Insights
+
+Thera Bank's main purpose for this consult is to build the best model which will classify the right target customers who have a higher probability of getting a Personal Loan with the bank and to convert more liability customers to asset customers so as to earn more via interest on loan repayments.
+
+The best model will be a model that is able to improve the yield in getting a Personal Loan, increasing their conversion metrics of more than 9.6%, with a highly targeted group of customers so as to reduce EDM/Advertising costs.
+
+Based on our Model Testing and Refinements using CART and Random Forest, Random Forest model will be a better fit for Thera Bank's needs. Apart from the higher accuracy score (98.73%), it also has higher specificity (99.12%) than the CART model - This metric shows that the proportion of actual negatives that are correctly identified are higher than actual positives for test set. Based on the test model, the bank is more likely to target customers using the variables of Education, Income, Family Members and Credit Card Spending who are likely to accept the Personal Loan offers.
+
